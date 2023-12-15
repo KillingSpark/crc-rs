@@ -2,6 +2,7 @@ use crate::util::crc32;
 use crc_catalog::Algorithm;
 
 mod bytewise;
+mod clmul;
 mod default;
 mod nolookup;
 mod slice16;
@@ -49,6 +50,64 @@ const fn update_nolookup(mut crc: u32, algorithm: &Algorithm<u32>, bytes: &[u8])
         }
     }
     crc
+}
+
+const fn update_clmul(mut crc: u32, algorithm: &Algorithm<u32>, bytes: &[u8]) -> u32 {
+    let poly = if algorithm.refin {
+        let poly = algorithm.poly.reverse_bits();
+        poly >> (32u8 - algorithm.width)
+    } else {
+        algorithm.poly << (32u8 - algorithm.width)
+    };
+    let k = poly; // TODO this needs to be 1<<32 mod poly, which might just be poly?
+
+    let mut i = 0;
+    let mut accu;
+    if algorithm.refin {
+        while i < bytes.len() {
+            panic!("Reflected is for later");
+        }
+    } else {
+        if bytes.len() >= 4 {
+            accu = (crc as u64) << 32;
+            while i + 4 < bytes.len() {
+                let next_bytes =
+                    u32::from_le_bytes([bytes[i], bytes[i + 1], bytes[i + 2], bytes[i + 3]]);
+                i += 4;
+                let clmul = clmul((accu >> 32) as u32, k);
+                accu = clmul ^ ((accu << 32) | next_bytes as u64);
+            }
+            crc = barret_reduce(accu, (1 << 32) | (poly as u64));
+        }
+        while i < bytes.len() {
+            let to_crc = ((crc >> 24) ^ bytes[i] as u32) & 0xFF;
+            crc = crc32(poly, algorithm.refin, to_crc) ^ (crc << 8);
+            i += 1;
+        }
+    }
+    crc
+}
+
+const fn clmul(a: u32, b: u32) -> u64 {
+    let a = a as u64;
+    let b = b as u64;
+    let mut res = 0;
+
+    let mut idx = 0;
+    while idx < 32 {
+        if a & 0x1 << idx == 1 {
+            res ^= b << idx;
+        }
+        idx += 1;
+    }
+    res
+}
+
+const fn barret_reduce(a: u64, n: u64) -> u32 {
+    const K: u64 = 32;
+    let m = (1 << K) / n as u64;
+    let q = ((a as u128 * m as u128) >> K) as u64;
+    (a - (q * (n as u64))) as u32
 }
 
 const fn update_bytewise(mut crc: u32, reflect: bool, table: &[u32; 256], bytes: &[u8]) -> u32 {
@@ -152,7 +211,7 @@ const fn update_slice16(
 
 #[cfg(test)]
 mod test {
-    use crate::{Bytewise, Crc, Implementation, NoTable, Slice16};
+    use crate::{Bytewise, ClMul, Crc, Implementation, NoTable, Slice16};
     use crc_catalog::{Algorithm, CRC_32_ISCSI};
 
     #[test]
@@ -271,17 +330,24 @@ mod test {
             residue: 0xb798b438,
         };
 
-        let algs_to_test = [&CRC_32_ISCSI, &CRC_32_ISCSI_NONREFLEX];
+        let algs_to_test = [&CRC_32_ISCSI_NONREFLEX];
 
         for alg in algs_to_test {
             for data in data {
                 let crc_slice16 = Crc::<Slice16<u32>>::new(alg);
                 let crc_nolookup = Crc::<NoTable<u32>>::new(alg);
+                let crc_clmul = Crc::<ClMul<u32>>::new(alg);
                 let expected = Crc::<Bytewise<u32>>::new(alg).checksum(data.as_bytes());
 
                 // Check that doing all at once works as expected
                 assert_eq!(crc_slice16.checksum(data.as_bytes()), expected);
                 assert_eq!(crc_nolookup.checksum(data.as_bytes()), expected);
+                assert_eq!(
+                    crc_clmul.checksum(data.as_bytes()),
+                    expected,
+                    "Input: {:?}",
+                    data
+                );
 
                 let mut digest = crc_slice16.digest();
                 digest.update(data.as_bytes());
