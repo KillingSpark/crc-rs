@@ -1,3 +1,5 @@
+use std::eprintln;
+
 use crate::util::crc32;
 use crc_catalog::Algorithm;
 
@@ -52,15 +54,7 @@ const fn update_nolookup(mut crc: u32, algorithm: &Algorithm<u32>, bytes: &[u8])
     crc
 }
 
-const fn update_clmul(mut crc: u32, algorithm: &Algorithm<u32>, bytes: &[u8]) -> u32 {
-    let poly = if algorithm.refin {
-        let poly = algorithm.poly.reverse_bits();
-        poly >> (32u8 - algorithm.width)
-    } else {
-        algorithm.poly << (32u8 - algorithm.width)
-    };
-    let k = poly; // TODO this needs to be 1<<32 mod poly, which might just be poly?
-
+fn update_clmul(mut crc: u32, algorithm: &Algorithm<u32>, bytes: &[u8]) -> u32 {
     let mut i = 0;
     let mut accu;
     if algorithm.refin {
@@ -68,24 +62,74 @@ const fn update_clmul(mut crc: u32, algorithm: &Algorithm<u32>, bytes: &[u8]) ->
             panic!("Reflected is for later");
         }
     } else {
-        if bytes.len() >= 4 {
-            accu = (crc as u64) << 32;
+        let k = calc_k(64, algorithm.poly);
+        if bytes.len() >= 8 {
+            accu = u64::from_le_bytes([
+                bytes[i],
+                bytes[i + 1],
+                bytes[i + 2],
+                bytes[i + 3],
+                bytes[i + 4],
+                bytes[i + 5],
+                bytes[i + 6],
+                bytes[i + 7],
+            ]);
+            i = 8;
             while i + 4 < bytes.len() {
                 let next_bytes =
                     u32::from_le_bytes([bytes[i], bytes[i + 1], bytes[i + 2], bytes[i + 3]]);
                 i += 4;
-                let clmul = clmul((accu >> 32) as u32, k);
+                let accu_hi = (accu >> 32) as u32;
+                let clmul = clmul(accu_hi, k);
                 accu = clmul ^ ((accu << 32) | next_bytes as u64);
             }
-            crc = barret_reduce(accu, (1 << 32) | (poly as u64));
+            let px = (1 << 32) | (algorithm.poly as u64);
+            let mu = calc_mu(algorithm.poly);
+            crc = barret_reduce(accu, px, mu);
         }
         while i < bytes.len() {
             let to_crc = ((crc >> 24) ^ bytes[i] as u32) & 0xFF;
-            crc = crc32(poly, algorithm.refin, to_crc) ^ (crc << 8);
+            crc = crc32(algorithm.poly, algorithm.refin, to_crc) ^ (crc << 8);
             i += 1;
         }
     }
     crc
+}
+
+/// Calc x^degree mod poly
+const fn calc_k(mut degreee: usize, poly: u32) -> u32 {
+    // First step always takes the polynom
+    let mut result = poly;
+    while degreee > 32 {
+        degreee -= 1;
+        if result & 0x80000000 != 0 {
+            result = (result << 1) ^ poly;
+        } else {
+            result = result << 1;
+        }
+    }
+
+    result
+}
+
+// Calc x^64 / poly ignoring the residual
+const fn calc_mu(poly: u32) -> u64 {
+    // First step always takes the polynom
+    let mut residual = poly;
+    let mut result = 0;
+    let mut degreee = 64;
+    while degreee > 32 {
+        degreee -= 1;
+        result <<= 1;
+        if residual & 0x80000000 != 0 {
+            residual = (residual << 1) ^ poly;
+            result |= 1;
+        } else {
+            residual <<= 1;
+        }
+    }
+
+    result
 }
 
 const fn clmul(a: u32, b: u32) -> u64 {
@@ -95,7 +139,7 @@ const fn clmul(a: u32, b: u32) -> u64 {
 
     let mut idx = 0;
     while idx < 32 {
-        if a & 0x1 << idx == 1 {
+        if (a >> idx) & 0x1 == 1 {
             res ^= b << idx;
         }
         idx += 1;
@@ -103,11 +147,33 @@ const fn clmul(a: u32, b: u32) -> u64 {
     res
 }
 
-const fn barret_reduce(a: u64, n: u64) -> u32 {
-    const K: u64 = 32;
-    let m = (1 << K) / n as u64;
-    let q = ((a as u128 * m as u128) >> K) as u64;
-    (a - (q * (n as u64))) as u32
+/// make sure that the bits used in a and b do not exceed 64
+const fn clmul_u64(a: u32, b: u64) -> u64 {
+    let bits_a = 32 - a.leading_zeros();
+    let bits_b = 64 - b.leading_zeros();
+    debug_assert!(bits_a + bits_b <= 64);
+    let a = a as u64;
+    let b = b as u64;
+    let mut res = 0;
+
+    let mut idx = 0;
+    while idx < 32 {
+        if (a >> idx) & 0x1 == 1 {
+            res ^= b << idx;
+        }
+        idx += 1;
+    }
+    res
+}
+
+fn barret_reduce(rx: u64, px: u64, mu: u64) -> u32 {
+    eprintln!("R {rx:X} P {px:X} M {mu:X}");
+    eprintln!("R >> 32 {:X}", rx >> 32);
+    let t1 = clmul_u64((rx >> 32) as u32, mu);
+    eprintln!("T1 {t1:X}");
+    eprintln!("T1 >> 32 {:X}", t1 >> 32);
+    let t2 = clmul_u64((t1 >> 32) as u32, px);
+    (rx ^ t2) as u32
 }
 
 const fn update_bytewise(mut crc: u32, reflect: bool, table: &[u32; 256], bytes: &[u8]) -> u32 {
@@ -211,8 +277,40 @@ const fn update_slice16(
 
 #[cfg(test)]
 mod test {
-    use crate::{Bytewise, ClMul, Crc, Implementation, NoTable, Slice16};
+    use crate::{
+        crc32::{calc_k, calc_mu, clmul},
+        Bytewise, ClMul, Crc, Implementation, NoTable, Slice16,
+    };
     use crc_catalog::{Algorithm, CRC_32_ISCSI};
+
+    #[test]
+    fn test_calc_k() {
+        let poly = 0x04C11DB7;
+        assert_eq!(calc_k(64, poly), 0x490D678D);
+        assert_eq!(calc_k(96, poly), 0xF200AA66);
+        assert_eq!(calc_k(128, poly), 0xE8A45605);
+        assert_eq!(calc_k(128 + 64, poly), 0xC5B9CD4C);
+        assert_eq!(calc_k(128 * 4, poly), 0xE6228B11);
+        assert_eq!(calc_k(128 * 4 + 64, poly), 0x8833794C);
+    }
+
+    #[test]
+    fn test_calc_mu() {
+        let poly = 0x04C11DB7;
+        assert_eq!(calc_mu(poly), 0x104D101DF);
+    }
+
+    #[test]
+    fn test_clmul() {
+        assert_eq!(clmul(0, 0), 0);
+        assert_eq!(clmul(1, 0), 0);
+        assert_eq!(clmul(0, 1), 0);
+        assert_eq!(clmul(1, 1), 1);
+        assert_eq!(clmul(1, 2), 2);
+        assert_eq!(clmul(0b11, 0b11), 0b101);
+        assert_eq!(clmul(0b1001, 0b11), 0b11011);
+        assert_eq!(clmul(0xF0000000, 0x1010), 0xF0F00000000);
+    }
 
     #[test]
     fn default_table_size() {

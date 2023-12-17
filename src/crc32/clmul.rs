@@ -10,13 +10,13 @@ impl Crc<ClMul<u32>> {
         }
     }
 
-    pub const fn checksum(&self, bytes: &[u8]) -> u32 {
+    pub fn checksum(&self, bytes: &[u8]) -> u32 {
         let mut crc = init(self.algorithm, self.algorithm.init);
         crc = self.update(crc, bytes);
         finalize(self.algorithm, crc)
     }
 
-    const fn update(&self, crc: u32, bytes: &[u8]) -> u32 {
+    fn update(&self, crc: u32, bytes: &[u8]) -> u32 {
         update_clmul(crc, self.algorithm, bytes)
     }
 
