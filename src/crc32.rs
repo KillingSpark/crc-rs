@@ -116,7 +116,7 @@ const fn calc_k(mut degreee: usize, poly: u32) -> u32 {
 const fn calc_mu(poly: u32) -> u64 {
     // First step always takes the polynom
     let mut residual = poly;
-    let mut result = 0;
+    let mut result = 1;
     let mut degreee = 64;
     while degreee > 32 {
         degreee -= 1;
