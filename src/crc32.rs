@@ -62,22 +62,25 @@ fn update_clmul(mut crc: u32, algorithm: &Algorithm<u32>, bytes: &[u8]) -> u32 {
             panic!("Reflected is for later");
         }
     } else {
+        let other_crc = update_nolookup(crc, algorithm, bytes);
         let k = calc_k(64, algorithm.poly);
-        if bytes.len() >= 8 {
-            accu = u64::from_le_bytes([
+        if bytes.len() >= 4 {
+            // Accu starts with the previous crc as the top most bits and loads 4 more bytes from the new data
+            // 0xC0_C1_C2_C3_B0_B1_B2_B3
+            accu = u64::from_be_bytes([
+                (crc >> 24) as u8,
+                (crc >> 16) as u8,
+                (crc >> 8) as u8,
+                (crc) as u8,
                 bytes[i],
                 bytes[i + 1],
                 bytes[i + 2],
                 bytes[i + 3],
-                bytes[i + 4],
-                bytes[i + 5],
-                bytes[i + 6],
-                bytes[i + 7],
             ]);
-            i = 8;
+            i = 4;
             while i + 4 < bytes.len() {
                 let next_bytes =
-                    u32::from_le_bytes([bytes[i], bytes[i + 1], bytes[i + 2], bytes[i + 3]]);
+                    u32::from_be_bytes([bytes[i], bytes[i + 1], bytes[i + 2], bytes[i + 3]]);
                 i += 4;
                 let accu_hi = (accu >> 32) as u32;
                 let clmul = clmul(accu_hi, k);
@@ -86,6 +89,7 @@ fn update_clmul(mut crc: u32, algorithm: &Algorithm<u32>, bytes: &[u8]) -> u32 {
             let px = (1 << 32) | (algorithm.poly as u64);
             let mu = calc_mu(algorithm.poly);
             crc = barret_reduce(accu, px, mu);
+            eprintln!("{other_crc:X} {crc:X}");
         }
         while i < bytes.len() {
             let to_crc = ((crc >> 24) ^ bytes[i] as u32) & 0xFF;
@@ -112,7 +116,7 @@ const fn calc_k(mut degreee: usize, poly: u32) -> u32 {
     result
 }
 
-// Calc x^64 / poly ignoring the residual
+/// Calc x^64 / poly ignoring the residual
 const fn calc_mu(poly: u32) -> u64 {
     // First step always takes the polynom
     let mut residual = poly;
@@ -132,8 +136,8 @@ const fn calc_mu(poly: u32) -> u64 {
     result
 }
 
+/// Carry-less multiplication of two 32 bit ints
 const fn clmul(a: u32, b: u32) -> u64 {
-    let a = a as u64;
     let b = b as u64;
     let mut res = 0;
 
@@ -147,13 +151,15 @@ const fn clmul(a: u32, b: u32) -> u64 {
     res
 }
 
-/// make sure that the bits used in a and b do not exceed 64
-const fn clmul_u64(a: u32, b: u64) -> u64 {
-    let bits_a = 32 - a.leading_zeros();
-    let bits_b = 64 - b.leading_zeros();
-    debug_assert!(bits_a + bits_b <= 64);
-    let a = a as u64;
-    let b = b as u64;
+/// The same a clmul but allows u64 as the second argument.
+/// Note that this only allows operands that will not overflow the resulting u64
+fn clmul_u64(a: u32, b: u64) -> u64 {
+    if a == 0 || b == 0 {
+        return 0;
+    }
+    let abits = 32 - a.leading_zeros();
+    let bbits = 64 - b.leading_zeros();
+    assert!(abits + bbits - 1 <= 64);
     let mut res = 0;
 
     let mut idx = 0;
@@ -163,17 +169,34 @@ const fn clmul_u64(a: u32, b: u64) -> u64 {
         }
         idx += 1;
     }
+    // just double checking that the result has the correct highest bit set
+    let resbits = 64 - res.leading_zeros();
+    debug_assert!(abits + bbits - 1 == resbits, "0x{a:X} {abits} 0x{b:X} {bbits} -> 0x{res:X} {resbits}");
     res
 }
 
+/// Calculates rx mod px
 fn barret_reduce(rx: u64, px: u64, mu: u64) -> u32 {
-    eprintln!("R {rx:X} P {px:X} M {mu:X}");
-    eprintln!("R >> 32 {:X}", rx >> 32);
     let t1 = clmul_u64((rx >> 32) as u32, mu);
-    eprintln!("T1 {t1:X}");
-    eprintln!("T1 >> 32 {:X}", t1 >> 32);
     let t2 = clmul_u64((t1 >> 32) as u32, px);
-    (rx ^ t2) as u32
+    let res = (rx ^ t2) as u32;
+    debug_assert_eq!(res, reduce_poly_div(rx, px as u32));
+    res
+}
+
+/// Just to double check the barret reduction, also calculates r mod poly
+fn reduce_poly_div(mut r: u64, poly: u32) -> u32 {
+    let mut i = 0;
+    while i < 32 {
+        i += 1;
+        let add_poly = (r >> 63) & 0x1 == 1;
+        r <<= 1;
+        if add_poly {
+            r ^= (poly as u64) << 32;
+        }
+    }
+    debug_assert_eq!(r as u32, 0);
+    (r >> 32) as u32
 }
 
 const fn update_bytewise(mut crc: u32, reflect: bool, table: &[u32; 256], bytes: &[u8]) -> u32 {
@@ -282,6 +305,7 @@ mod test {
         Bytewise, ClMul, Crc, Implementation, NoTable, Slice16,
     };
     use crc_catalog::{Algorithm, CRC_32_ISCSI};
+    use crate::crc32::clmul_u64;
 
     #[test]
     fn test_calc_k() {
@@ -313,13 +337,25 @@ mod test {
     }
 
     #[test]
+    fn test_clmul_64() {
+        assert_eq!(clmul_u64(0, 0), 0);
+        assert_eq!(clmul_u64(1, 0), 0);
+        assert_eq!(clmul_u64(0, 1), 0);
+        assert_eq!(clmul_u64(1, 1), 1);
+        assert_eq!(clmul_u64(1, 2), 2);
+        assert_eq!(clmul_u64(0b11, 0b11), 0b101);
+        assert_eq!(clmul_u64(0b1001, 0b11), 0b11011);
+        assert_eq!(clmul_u64(0x1010, 0x1F0000000), 0x1F1F00000000);
+    }
+
+    #[test]
     fn default_table_size() {
         const TABLE_SIZE: usize = core::mem::size_of::<<u32 as Implementation>::Table>();
         const BYTES_PER_ENTRY: usize = 4;
         #[cfg(all(
-            feature = "no-table-mem-limit",
-            feature = "bytewise-mem-limit",
-            feature = "slice16-mem-limit"
+        feature = "no-table-mem-limit",
+        feature = "bytewise-mem-limit",
+        feature = "slice16-mem-limit"
         ))]
         {
             const EXPECTED: usize = 0;
@@ -327,9 +363,9 @@ mod test {
             const _: () = assert!(EXPECTED == TABLE_SIZE);
         }
         #[cfg(all(
-            feature = "no-table-mem-limit",
-            feature = "bytewise-mem-limit",
-            not(feature = "slice16-mem-limit")
+        feature = "no-table-mem-limit",
+        feature = "bytewise-mem-limit",
+        not(feature = "slice16-mem-limit")
         ))]
         {
             const EXPECTED: usize = 0;
@@ -337,9 +373,9 @@ mod test {
             const _: () = assert!(EXPECTED == TABLE_SIZE);
         }
         #[cfg(all(
-            feature = "no-table-mem-limit",
-            not(feature = "bytewise-mem-limit"),
-            feature = "slice16-mem-limit"
+        feature = "no-table-mem-limit",
+        not(feature = "bytewise-mem-limit"),
+        feature = "slice16-mem-limit"
         ))]
         {
             const EXPECTED: usize = 0;
@@ -347,9 +383,9 @@ mod test {
             const _: () = assert!(EXPECTED == TABLE_SIZE);
         }
         #[cfg(all(
-            feature = "no-table-mem-limit",
-            not(feature = "bytewise-mem-limit"),
-            not(feature = "slice16-mem-limit")
+        feature = "no-table-mem-limit",
+        not(feature = "bytewise-mem-limit"),
+        not(feature = "slice16-mem-limit")
         ))]
         {
             const EXPECTED: usize = 0;
@@ -358,9 +394,9 @@ mod test {
         }
 
         #[cfg(all(
-            not(feature = "no-table-mem-limit"),
-            feature = "bytewise-mem-limit",
-            feature = "slice16-mem-limit"
+        not(feature = "no-table-mem-limit"),
+        feature = "bytewise-mem-limit",
+        feature = "slice16-mem-limit"
         ))]
         {
             const EXPECTED: usize = 256 * BYTES_PER_ENTRY;
@@ -368,9 +404,9 @@ mod test {
             const _: () = assert!(EXPECTED == TABLE_SIZE);
         }
         #[cfg(all(
-            not(feature = "no-table-mem-limit"),
-            feature = "bytewise-mem-limit",
-            not(feature = "slice16-mem-limit")
+        not(feature = "no-table-mem-limit"),
+        feature = "bytewise-mem-limit",
+        not(feature = "slice16-mem-limit")
         ))]
         {
             const EXPECTED: usize = 256 * BYTES_PER_ENTRY;
@@ -379,9 +415,9 @@ mod test {
         }
 
         #[cfg(all(
-            not(feature = "no-table-mem-limit"),
-            not(feature = "bytewise-mem-limit"),
-            feature = "slice16-mem-limit"
+        not(feature = "no-table-mem-limit"),
+        not(feature = "bytewise-mem-limit"),
+        feature = "slice16-mem-limit"
         ))]
         {
             const EXPECTED: usize = 256 * 16 * BYTES_PER_ENTRY;
@@ -390,9 +426,9 @@ mod test {
         }
 
         #[cfg(all(
-            not(feature = "no-table-mem-limit"),
-            not(feature = "bytewise-mem-limit"),
-            not(feature = "slice16-mem-limit")
+        not(feature = "no-table-mem-limit"),
+        not(feature = "bytewise-mem-limit"),
+        not(feature = "slice16-mem-limit")
         ))]
         {
             const EXPECTED: usize = 256 * BYTES_PER_ENTRY;
@@ -407,14 +443,14 @@ mod test {
     #[test]
     fn correctness() {
         let data: &[&str] = &[
-        "",
-        "1",
-        "1234",
-        "123456789",
-        "0123456789ABCDE",
-        "01234567890ABCDEFGHIJK",
-        "01234567890ABCDEFGHIJK01234567890ABCDEFGHIJK01234567890ABCDEFGHIJK01234567890ABCDEFGHIJK01234567890ABCDEFGHIJK01234567890ABCDEFGHIJK01234567890ABCDEFGHIJK01234567890ABCDEFGHIJK01234567890ABCDEFGHIJK01234567890ABCDEFGHIJK01234567890ABCDEFGHIJK01234567890ABCDEFGHIJK",
-    ];
+            "",
+            "1",
+            "1234",
+            "123456789",
+            "0123456789ABCDE",
+            "01234567890ABCDEFGHIJK",
+            "01234567890ABCDEFGHIJK01234567890ABCDEFGHIJK01234567890ABCDEFGHIJK01234567890ABCDEFGHIJK01234567890ABCDEFGHIJK01234567890ABCDEFGHIJK01234567890ABCDEFGHIJK01234567890ABCDEFGHIJK01234567890ABCDEFGHIJK01234567890ABCDEFGHIJK01234567890ABCDEFGHIJK01234567890ABCDEFGHIJK",
+        ];
 
         pub const CRC_32_ISCSI_NONREFLEX: Algorithm<u32> = Algorithm {
             width: 32,
@@ -444,7 +480,7 @@ mod test {
                     crc_clmul.checksum(data.as_bytes()),
                     expected,
                     "Input: {:?}",
-                    data
+                    data,
                 );
 
                 let mut digest = crc_slice16.digest();
