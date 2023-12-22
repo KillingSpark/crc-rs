@@ -65,18 +65,17 @@ fn update_clmul(mut crc: u32, algorithm: &Algorithm<u32>, bytes: &[u8]) -> u32 {
         let other_crc = update_nolookup(crc, algorithm, bytes);
         let k = calc_k(64, algorithm.poly);
         if bytes.len() >= 4 {
-            // Accu starts with the previous crc as the top most bits and loads 4 more bytes from the new data
-            // 0xC0_C1_C2_C3_B0_B1_B2_B3
             accu = u64::from_be_bytes([
-                (crc >> 24) as u8,
-                (crc >> 16) as u8,
-                (crc >> 8) as u8,
-                (crc) as u8,
+                0,
+                0,
+                0,
+                0,
                 bytes[i],
                 bytes[i + 1],
                 bytes[i + 2],
                 bytes[i + 3],
-            ]);
+            ]) ^ crc as u64;
+
             i = 4;
             while i + 4 < bytes.len() {
                 let next_bytes =
@@ -171,7 +170,10 @@ fn clmul_u64(a: u32, b: u64) -> u64 {
     }
     // just double checking that the result has the correct highest bit set
     let resbits = 64 - res.leading_zeros();
-    debug_assert!(abits + bbits - 1 == resbits, "0x{a:X} {abits} 0x{b:X} {bbits} -> 0x{res:X} {resbits}");
+    debug_assert!(
+        abits + bbits - 1 == resbits,
+        "0x{a:X} {abits} 0x{b:X} {bbits} -> 0x{res:X} {resbits}"
+    );
     res
 }
 
@@ -300,12 +302,38 @@ const fn update_slice16(
 
 #[cfg(test)]
 mod test {
+    use crate::crc32::clmul_u64;
     use crate::{
         crc32::{calc_k, calc_mu, clmul},
         Bytewise, ClMul, Crc, Implementation, NoTable, Slice16,
     };
-    use crc_catalog::{Algorithm, CRC_32_ISCSI};
-    use crate::crc32::clmul_u64;
+    use crc_catalog::Algorithm;
+
+    use super::{barret_reduce, update_nolookup};
+
+    #[test]
+    fn test_barret_reduction() {
+        pub const CRC_32_ISCSI_NONREFLEX: Algorithm<u32> = Algorithm {
+            width: 32,
+            poly: 0x1edc6f41,
+            init: 0xffffffff,
+            // This is the only flag that affects the optimized code path
+            refin: false,
+            refout: true,
+            xorout: 0xffffffff,
+            check: 0xe3069283,
+            residue: 0xb798b438,
+        };
+
+        // I think barret reduction isn't quite right yet...
+        let poly = CRC_32_ISCSI_NONREFLEX.poly;
+        let px = 1 << 32 | poly as u64;
+        let rx = 0xFF_0F_F0_00_00_00_00_00;
+        let barret = barret_reduce(rx, px, calc_mu(poly));
+        let rx = 0xFF_0F_F0_00u32;
+        let no_lookup = update_nolookup(0, &CRC_32_ISCSI_NONREFLEX, &rx.to_be_bytes());
+        assert_eq!(barret, no_lookup);
+    }
 
     #[test]
     fn test_calc_k() {
@@ -353,9 +381,9 @@ mod test {
         const TABLE_SIZE: usize = core::mem::size_of::<<u32 as Implementation>::Table>();
         const BYTES_PER_ENTRY: usize = 4;
         #[cfg(all(
-        feature = "no-table-mem-limit",
-        feature = "bytewise-mem-limit",
-        feature = "slice16-mem-limit"
+            feature = "no-table-mem-limit",
+            feature = "bytewise-mem-limit",
+            feature = "slice16-mem-limit"
         ))]
         {
             const EXPECTED: usize = 0;
@@ -363,9 +391,9 @@ mod test {
             const _: () = assert!(EXPECTED == TABLE_SIZE);
         }
         #[cfg(all(
-        feature = "no-table-mem-limit",
-        feature = "bytewise-mem-limit",
-        not(feature = "slice16-mem-limit")
+            feature = "no-table-mem-limit",
+            feature = "bytewise-mem-limit",
+            not(feature = "slice16-mem-limit")
         ))]
         {
             const EXPECTED: usize = 0;
@@ -373,9 +401,9 @@ mod test {
             const _: () = assert!(EXPECTED == TABLE_SIZE);
         }
         #[cfg(all(
-        feature = "no-table-mem-limit",
-        not(feature = "bytewise-mem-limit"),
-        feature = "slice16-mem-limit"
+            feature = "no-table-mem-limit",
+            not(feature = "bytewise-mem-limit"),
+            feature = "slice16-mem-limit"
         ))]
         {
             const EXPECTED: usize = 0;
@@ -383,9 +411,9 @@ mod test {
             const _: () = assert!(EXPECTED == TABLE_SIZE);
         }
         #[cfg(all(
-        feature = "no-table-mem-limit",
-        not(feature = "bytewise-mem-limit"),
-        not(feature = "slice16-mem-limit")
+            feature = "no-table-mem-limit",
+            not(feature = "bytewise-mem-limit"),
+            not(feature = "slice16-mem-limit")
         ))]
         {
             const EXPECTED: usize = 0;
@@ -394,9 +422,9 @@ mod test {
         }
 
         #[cfg(all(
-        not(feature = "no-table-mem-limit"),
-        feature = "bytewise-mem-limit",
-        feature = "slice16-mem-limit"
+            not(feature = "no-table-mem-limit"),
+            feature = "bytewise-mem-limit",
+            feature = "slice16-mem-limit"
         ))]
         {
             const EXPECTED: usize = 256 * BYTES_PER_ENTRY;
@@ -404,9 +432,9 @@ mod test {
             const _: () = assert!(EXPECTED == TABLE_SIZE);
         }
         #[cfg(all(
-        not(feature = "no-table-mem-limit"),
-        feature = "bytewise-mem-limit",
-        not(feature = "slice16-mem-limit")
+            not(feature = "no-table-mem-limit"),
+            feature = "bytewise-mem-limit",
+            not(feature = "slice16-mem-limit")
         ))]
         {
             const EXPECTED: usize = 256 * BYTES_PER_ENTRY;
@@ -415,9 +443,9 @@ mod test {
         }
 
         #[cfg(all(
-        not(feature = "no-table-mem-limit"),
-        not(feature = "bytewise-mem-limit"),
-        feature = "slice16-mem-limit"
+            not(feature = "no-table-mem-limit"),
+            not(feature = "bytewise-mem-limit"),
+            feature = "slice16-mem-limit"
         ))]
         {
             const EXPECTED: usize = 256 * 16 * BYTES_PER_ENTRY;
@@ -426,9 +454,9 @@ mod test {
         }
 
         #[cfg(all(
-        not(feature = "no-table-mem-limit"),
-        not(feature = "bytewise-mem-limit"),
-        not(feature = "slice16-mem-limit")
+            not(feature = "no-table-mem-limit"),
+            not(feature = "bytewise-mem-limit"),
+            not(feature = "slice16-mem-limit")
         ))]
         {
             const EXPECTED: usize = 256 * BYTES_PER_ENTRY;
