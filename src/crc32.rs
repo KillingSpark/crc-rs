@@ -143,17 +143,7 @@ const fn calc_mu(poly: u32) -> u64 {
 
 /// Carry-less multiplication of two 32 bit ints
 const fn clmul(a: u32, b: u32) -> u64 {
-    let b = b as u64;
-    let mut res = 0;
-
-    let mut idx = 0;
-    while idx < 32 {
-        if (a >> idx) & 0x1 == 1 {
-            res ^= b << idx;
-        }
-        idx += 1;
-    }
-    res
+    clmul_u64(a, b as u64)
 }
 
 /// The same a clmul but allows u64 as the second argument.
