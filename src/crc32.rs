@@ -85,7 +85,7 @@ const fn update_clmul(mut crc: u32, algorithm: &Algorithm<u32>, bytes: &[u8]) ->
                 let clmul = clmul(accu_hi, k);
                 accu = clmul ^ ((accu << 32) | next_bytes as u64);
             }
-            // add implied zeroes at the end
+            // add implied zeroes at the end of the message polynom
             let next_bytes = 0;
             let accu_hi = (accu >> 32) as u32;
             let clmul = clmul(accu_hi, k);
@@ -305,6 +305,7 @@ mod test {
         let px = 1 << 32 | poly as u64;
         let rx = 0xFF_0F_F0_00_04_03_02_01;
 
+        // add implied zeroes at the end of the message polynom
         let next_bytes = 0;
         let accu_hi = (rx >> 32) as u32;
         let clmul = clmul(accu_hi, calc_k(64, poly));
