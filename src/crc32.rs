@@ -325,12 +325,16 @@ mod test {
             residue: 0xb798b438,
         };
 
-        // I think barret reduction isn't quite right yet...
         let poly = CRC_32_ISCSI_NONREFLEX.poly;
         let px = 1 << 32 | poly as u64;
-        let rx = 0xFF_0F_F0_00_00_00_00_00;
-        let barret = barret_reduce(rx, px, calc_mu(poly));
-        let rx = 0xFF_0F_F0_00u32;
+        let rx = 0xFF_0F_F0_00_04_03_02_01;
+
+        let next_bytes = 0;
+        let accu_hi = (rx >> 32) as u32;
+        let clmul = clmul(accu_hi, calc_k(64, poly));
+        let to_barret_reduce = clmul ^ ((rx << 32) | next_bytes as u64);
+
+        let barret = barret_reduce(to_barret_reduce, px, calc_mu(poly));
         let no_lookup = update_nolookup(0, &CRC_32_ISCSI_NONREFLEX, &rx.to_be_bytes());
         assert_eq!(barret, no_lookup);
     }
