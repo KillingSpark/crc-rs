@@ -85,6 +85,13 @@ fn update_clmul(mut crc: u32, algorithm: &Algorithm<u32>, bytes: &[u8]) -> u32 {
                 let clmul = clmul(accu_hi, k);
                 accu = clmul ^ ((accu << 32) | next_bytes as u64);
             }
+            // add implied zeroes at the end
+            let next_bytes = 0;
+            let accu_hi = (accu >> 32) as u32;
+            let clmul = clmul(accu_hi, k);
+            accu = clmul ^ ((accu << 32) | next_bytes as u64);
+
+
             let px = (1 << 32) | (algorithm.poly as u64);
             let mu = calc_mu(algorithm.poly);
             crc = barret_reduce(accu, px, mu);
