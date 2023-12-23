@@ -1,5 +1,3 @@
-use std::eprintln;
-
 use crate::util::crc32;
 use crc_catalog::Algorithm;
 
@@ -54,7 +52,7 @@ const fn update_nolookup(mut crc: u32, algorithm: &Algorithm<u32>, bytes: &[u8])
     crc
 }
 
-fn update_clmul(mut crc: u32, algorithm: &Algorithm<u32>, bytes: &[u8]) -> u32 {
+const fn update_clmul(mut crc: u32, algorithm: &Algorithm<u32>, bytes: &[u8]) -> u32 {
     let mut i = 0;
     let mut accu;
     if algorithm.refin {
@@ -62,9 +60,11 @@ fn update_clmul(mut crc: u32, algorithm: &Algorithm<u32>, bytes: &[u8]) -> u32 {
             panic!("Reflected is for later");
         }
     } else {
-        let other_crc = update_nolookup(crc, algorithm, bytes);
+        // TODO pre-calculate this
         let k = calc_k(64, algorithm.poly);
         if bytes.len() >= 4 {
+            // the accu starts with 4 bytes from the crc and the first 4 bytes from the new data
+            // xored in the lower 4 bytes of the accu
             accu = u64::from_be_bytes([
                 0,
                 0,
@@ -91,11 +91,10 @@ fn update_clmul(mut crc: u32, algorithm: &Algorithm<u32>, bytes: &[u8]) -> u32 {
             let clmul = clmul(accu_hi, k);
             accu = clmul ^ ((accu << 32) | next_bytes as u64);
 
-
+            // TODO pre-calculate these
             let px = (1 << 32) | (algorithm.poly as u64);
             let mu = calc_mu(algorithm.poly);
             crc = barret_reduce(accu, px, mu);
-            eprintln!("{other_crc:X} {crc:X}");
         }
         while i < bytes.len() {
             let to_crc = ((crc >> 24) ^ bytes[i] as u32) & 0xFF;
@@ -115,7 +114,7 @@ const fn calc_k(mut degreee: usize, poly: u32) -> u32 {
         if result & 0x80000000 != 0 {
             result = (result << 1) ^ poly;
         } else {
-            result = result << 1;
+            result <<= 1;
         }
     }
 
@@ -159,7 +158,7 @@ const fn clmul(a: u32, b: u32) -> u64 {
 
 /// The same a clmul but allows u64 as the second argument.
 /// Note that this only allows operands that will not overflow the resulting u64
-fn clmul_u64(a: u32, b: u64) -> u64 {
+const fn clmul_u64(a: u32, b: u64) -> u64 {
     if a == 0 || b == 0 {
         return 0;
     }
@@ -177,35 +176,15 @@ fn clmul_u64(a: u32, b: u64) -> u64 {
     }
     // just double checking that the result has the correct highest bit set
     let resbits = 64 - res.leading_zeros();
-    debug_assert!(
-        abits + bbits - 1 == resbits,
-        "0x{a:X} {abits} 0x{b:X} {bbits} -> 0x{res:X} {resbits}"
-    );
+    debug_assert!(abits + bbits - 1 == resbits);
     res
 }
 
 /// Calculates rx mod px
-fn barret_reduce(rx: u64, px: u64, mu: u64) -> u32 {
+const fn barret_reduce(rx: u64, px: u64, mu: u64) -> u32 {
     let t1 = clmul_u64((rx >> 32) as u32, mu);
     let t2 = clmul_u64((t1 >> 32) as u32, px);
-    let res = (rx ^ t2) as u32;
-    debug_assert_eq!(res, reduce_poly_div(rx, px as u32));
-    res
-}
-
-/// Just to double check the barret reduction, also calculates r mod poly
-fn reduce_poly_div(mut r: u64, poly: u32) -> u32 {
-    let mut i = 0;
-    while i < 32 {
-        i += 1;
-        let add_poly = (r >> 63) & 0x1 == 1;
-        r <<= 1;
-        if add_poly {
-            r ^= (poly as u64) << 32;
-        }
-    }
-    debug_assert_eq!(r as u32, 0);
-    (r >> 32) as u32
+    (rx ^ t2) as u32
 }
 
 const fn update_bytewise(mut crc: u32, reflect: bool, table: &[u32; 256], bytes: &[u8]) -> u32 {
