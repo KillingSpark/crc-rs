@@ -61,7 +61,7 @@ fn update_clmul(
     consts: &ClMulConsts32,
     bytes: &[u8],
 ) -> u32 {
-    let mut i = 0;
+    let mut bytes_idx = 0;
     let mut accu: __m128i;
     let k_512_576: __m128i;
     let k_192: __m128i;
@@ -70,49 +70,61 @@ fn update_clmul(
     let k_64: __m128i;
     let flip_bytes: __m128i =
         unsafe { _mm_set_epi32(0x00010203, 0x04050607, 0x08090A0B, 0x0C0D0E0F) };
+
     if algorithm.refin {
-        while i < bytes.len() {
+        while bytes_idx < bytes.len() {
             panic!("Reflected is for later");
         }
     } else {
-        while i < bytes.len() && unsafe { bytes.as_ptr().add(i) as usize % 16 != 0 } {
-            let to_crc = ((crc >> 24) ^ bytes[i] as u32) & 0xFF;
+        // Process first few bytes regularly until we are 16 byte aligned
+        // TODO we might be able to do this in an easier way
+        let first_few = (16 - bytes.as_ptr() as usize % 16) % 16;
+        for _ in 0..usize::min(bytes.len(), first_few) {
+            let to_crc = ((crc >> 24) ^ bytes[bytes_idx] as u32) & 0xFF;
             crc = crc32(algorithm.poly, algorithm.refin, to_crc) ^ (crc << 8);
-            i += 1;
+            bytes_idx += 1;
         }
-        if bytes.len() - i >= 16 {
+        if bytes.len() - bytes_idx >= 16 {
             unsafe {
                 // Load all consts into SSE registers
-                // The register allocator is smart enough to actually load these when necessary
+                // The optimizer is smart enough to only load these when necessary
                 k_512_576 = _mm_set_epi64x(consts.k_576 as _, consts.k_512 as _);
                 k_192 = _mm_set_epi64x(0, consts.k_192 as _);
                 k_128 = _mm_set_epi64x(0, consts.k_128 as _);
                 k_96 = _mm_set_epi64x(0, consts.k_96 as _);
                 k_64 = _mm_set_epi64x(0, consts.k_64 as _);
 
-                accu = _mm_load_si128(bytes.as_ptr().add(i).cast());
-                accu = _mm_shuffle_epi8(accu, flip_bytes);
-                i += 16;
+                /// load the next 16 bytes from bytes at `bytes_idx`
+                /// Only allowed when `bytes_idx` is 16 bytes aligned
+                macro_rules! load_next_16 {
+                    () => {{
+                        let loaded = _mm_shuffle_epi8(
+                            _mm_load_si128(bytes.as_ptr().add(bytes_idx).cast()),
+                            flip_bytes,
+                        );
+                        bytes_idx += 16;
+                        loaded
+                    }};
+                }
+
+                accu = load_next_16!();
                 accu = _mm_xor_si128(accu, _mm_set_epi32(crc as i32, 0, 0, 0));
 
-                if i + 48 < bytes.len() {
+                // 512 bit folding using 4 accus
+                if bytes_idx + 48 < bytes.len() {
                     // We work with 4 accumulators now allowing the CPU to process some of the folding in parallel
                     let mut accu_0 = accu;
-                    let mut accu_1 =
-                        _mm_shuffle_epi8(_mm_load_si128(bytes.as_ptr().add(i).cast()), flip_bytes);
-                    i += 16;
-                    let mut accu_2 =
-                        _mm_shuffle_epi8(_mm_load_si128(bytes.as_ptr().add(i).cast()), flip_bytes);
-                    i += 16;
-                    let mut accu_3 =
-                        _mm_shuffle_epi8(_mm_load_si128(bytes.as_ptr().add(i).cast()), flip_bytes);
-                    i += 16;
+                    let mut accu_1 = load_next_16!();
+                    let mut accu_2 = load_next_16!();
+                    let mut accu_3 = load_next_16!();
 
                     // We load 64 bytes in one loop, 16 for each iterator
-                    while i + 64 < bytes.len() {
+                    while bytes_idx + 64 < bytes.len() {
+                        let base_addr: *const __m128i = bytes.as_ptr().add(bytes_idx).cast();
+                        bytes_idx += 64;
                         // Fold one accu, load the next 16 bytes and store result into accu again
                         macro_rules! fold_once {
-                            ($accu_name:ident) => {
+                            ($accu_name:ident, $idx:expr) => {
                                 // fold upper and lower halves with the respective constant
                                 $accu_name = _mm_xor_si128(
                                     _mm_clmulepi64_si128($accu_name, k_512_576, 0x11),
@@ -122,18 +134,17 @@ fn update_clmul(
                                 $accu_name = _mm_xor_si128(
                                     $accu_name,
                                     _mm_shuffle_epi8(
-                                        _mm_load_si128(bytes.as_ptr().add(i).cast()),
+                                        _mm_load_si128(base_addr.add($idx)),
                                         flip_bytes,
                                     ),
                                 );
-                                i += 16;
                             };
                         }
 
-                        fold_once!(accu_0);
-                        fold_once!(accu_1);
-                        fold_once!(accu_2);
-                        fold_once!(accu_3);
+                        fold_once!(accu_0, 0);
+                        fold_once!(accu_1, 1);
+                        fold_once!(accu_2, 2);
+                        fold_once!(accu_3, 3);
                     }
 
                     // Fold accus into one 128bit value
@@ -150,13 +161,11 @@ fn update_clmul(
                 }
 
                 // reduce remaining 16 byte chunks sequentially
-                while i + 16 < bytes.len() {
+                while bytes_idx + 16 < bytes.len() {
                     let clmul_hi = _mm_clmulepi64_si128(accu, k_192, 0x01);
                     let clmul_lo = _mm_clmulepi64_si128(accu, k_128, 0x00);
-                    let next = _mm_load_si128(bytes.as_ptr().add(i).cast());
-                    i += 16;
+                    let next = load_next_16!();
                     accu = _mm_xor_si128(clmul_lo, clmul_hi);
-                    let next = _mm_shuffle_epi8(next, flip_bytes);
                     accu = _mm_xor_si128(accu, next);
                 }
 
@@ -178,10 +187,12 @@ fn update_clmul(
                 crc = barret_reduce(accu, consts.px, consts.mu);
             }
         }
-        while i < bytes.len() {
-            let to_crc = ((crc >> 24) ^ bytes[i] as u32) & 0xFF;
+        // TODO we might be able to do this in an easier way
+        // Process last few bytes regularly until we are 16 byte aligned
+        while bytes_idx < bytes.len() {
+            let to_crc = ((crc >> 24) ^ bytes[bytes_idx] as u32) & 0xFF;
             crc = crc32(algorithm.poly, algorithm.refin, to_crc) ^ (crc << 8);
-            i += 1;
+            bytes_idx += 1;
         }
     }
     crc
