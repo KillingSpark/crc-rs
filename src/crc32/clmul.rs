@@ -63,8 +63,10 @@ fn update_clmul(
 ) -> u32 {
     let mut i = 0;
     let mut accu: __m128i;
-    let k_128: __m128i;
+    let k_576: __m128i;
+    let k_512: __m128i;
     let k_192: __m128i;
+    let k_128: __m128i;
     let k_96: __m128i;
     let k_64: __m128i;
     let flip_bytes: __m128i =
@@ -81,21 +83,72 @@ fn update_clmul(
         }
         if bytes.len() - i >= 16 {
             unsafe {
-                k_128 = _mm_set_epi64x(0, consts.k_128 as _);
+                k_576 = _mm_set_epi64x(0, consts.k_576 as _);
+                k_512 = _mm_set_epi64x(0, consts.k_512 as _);
                 k_192 = _mm_set_epi64x(0, consts.k_192 as _);
+                k_128 = _mm_set_epi64x(0, consts.k_128 as _);
                 k_96 = _mm_set_epi64x(0, consts.k_96 as _);
                 k_64 = _mm_set_epi64x(0, consts.k_64 as _);
-            }
-            
-            unsafe {
-                let next = _mm_load_si128(bytes.as_ptr().add(i).cast());
-                let next = _mm_shuffle_epi8(next, flip_bytes);
-                accu = _mm_xor_si128(next, _mm_set_epi32(crc as i32, 0, 0, 0));
-                i += 16;
-            }
 
-            while i + 16 < bytes.len() {
-                unsafe {
+                accu = _mm_load_si128(bytes.as_ptr().add(i).cast());
+                accu = _mm_shuffle_epi8(accu, flip_bytes);
+                i += 16;
+                accu = _mm_xor_si128(accu, _mm_set_epi32(crc as i32, 0, 0, 0));
+
+                if i + 48 < bytes.len() {
+                    // We work with 4 accumulators now allowing the CPU to process some of the folding in parallel
+                    let mut accu_0 = accu;
+                    let mut accu_1 =
+                        _mm_shuffle_epi8(_mm_load_si128(bytes.as_ptr().add(i).cast()), flip_bytes);
+                    i += 16;
+                    let mut accu_2 =
+                        _mm_shuffle_epi8(_mm_load_si128(bytes.as_ptr().add(i).cast()), flip_bytes);
+                    i += 16;
+                    let mut accu_3 =
+                        _mm_shuffle_epi8(_mm_load_si128(bytes.as_ptr().add(i).cast()), flip_bytes);
+                    i += 16;
+
+                    // We load 64 bytes in one loop, 16 for each iterator
+                    while i + 64 < bytes.len() {
+                        // Fold one accu, load the next 16 bytes and store result into accu again
+                        macro_rules! fold_once {
+                            ($accu_name:ident, $upper_const:ident, $lower_const:ident) => {
+                                $accu_name = _mm_xor_si128(
+                                    _mm_clmulepi64_si128($accu_name, $upper_const, 0x01),
+                                    _mm_clmulepi64_si128($accu_name, $lower_const, 0x00),
+                                );
+                                $accu_name = _mm_xor_si128(
+                                    $accu_name,
+                                    _mm_shuffle_epi8(
+                                        _mm_load_si128(bytes.as_ptr().add(i).cast()),
+                                        flip_bytes,
+                                    ),
+                                );
+                                i += 16;
+                            };
+                        }
+
+                        fold_once!(accu_0, k_576, k_512);
+                        fold_once!(accu_1, k_576, k_512);
+                        fold_once!(accu_2, k_576, k_512);
+                        fold_once!(accu_3, k_576, k_512);
+                    }
+
+                    // Fold accus into one 128bit value
+                    accu_1 = _mm_xor_si128(accu_1, _mm_clmulepi64_si128(accu_0, k_192, 0x01));
+                    accu_1 = _mm_xor_si128(accu_1, _mm_clmulepi64_si128(accu_0, k_128, 0x00));
+
+                    accu_2 = _mm_xor_si128(accu_2, _mm_clmulepi64_si128(accu_1, k_192, 0x01));
+                    accu_2 = _mm_xor_si128(accu_2, _mm_clmulepi64_si128(accu_1, k_128, 0x00));
+
+                    accu_3 = _mm_xor_si128(accu_3, _mm_clmulepi64_si128(accu_2, k_192, 0x01));
+                    accu_3 = _mm_xor_si128(accu_3, _mm_clmulepi64_si128(accu_2, k_128, 0x00));
+
+                    accu = accu_3;
+                }
+
+                // reduce remaining 16 byte chunks sequentially
+                while i + 16 < bytes.len() {
                     let clmul_hi = _mm_clmulepi64_si128(accu, k_192, 0x01);
                     let clmul_lo = _mm_clmulepi64_si128(accu, k_128, 0x00);
                     let next = _mm_load_si128(bytes.as_ptr().add(i).cast());
@@ -104,24 +157,24 @@ fn update_clmul(
                     let next = _mm_shuffle_epi8(next, flip_bytes);
                     accu = _mm_xor_si128(accu, next);
                 }
-            }
 
-            unsafe {
-                // Reduce upper 64 down to 96
+                // Reduce from 128 -> 64 bits
+                // Fold upper 64 down to reduce to 96 bits
                 let clmul = _mm_clmulepi64_si128(accu, k_96, 0x01);
-                // shift in 4 zeroes
+                // shift in 4 zeroes (the implicit zeroes at the end of the message)
                 accu = _mm_slli_si128::<4>(accu);
-                // clear upper 32 bits
+                // clear topmost 32 bits
                 accu = _mm_and_si128(accu, _mm_set_epi32(0, u32::MAX as _, u32::MAX as _, 0));
                 accu = _mm_xor_si128(accu, clmul);
 
-                // Reduce upper 32 down to 64
+                // Fold upper 32 down to reduce to 64 bits
                 let clmul = _mm_clmulepi64_si128(accu, k_64, 0x01);
                 accu = _mm_xor_si128(accu, clmul);
-            }
 
-            let accu: u64 = unsafe { _mm_extract_epi64(accu, 0) as u64 };
-            crc = barret_reduce(accu, consts.px, consts.mu);
+                // extract 64 bit number and do conventional barrett reduction
+                let accu: u64 = _mm_extract_epi64(accu, 0) as u64;
+                crc = barret_reduce(accu, consts.px, consts.mu);
+            }
         }
         while i < bytes.len() {
             let to_crc = ((crc >> 24) ^ bytes[i] as u32) & 0xFF;

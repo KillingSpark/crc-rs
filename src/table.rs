@@ -149,6 +149,8 @@ pub struct ClMulConsts32 {
     pub k_96: u32,
     pub k_128: u32,
     pub k_192: u32,
+    pub k_512: u32,
+    pub k_576: u32,
     pub px: u64,
     pub mu: u64,
 }
@@ -166,6 +168,8 @@ pub(crate) const fn crc32_clmul_consts(width: u8, poly: u32, reflect: bool) -> C
         k_96: calc_k(96, poly),
         k_128: calc_k(128, poly),
         k_192: calc_k(192, poly),
+        k_512: calc_k(512, poly),
+        k_576: calc_k(576, poly),
         mu: calc_mu(poly),
         px: poly as u64 | 1 << 32,
     }
