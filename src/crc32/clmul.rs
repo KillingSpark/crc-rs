@@ -7,7 +7,6 @@ use crate::{
 use super::{finalize, init};
 
 use core::arch::x86_64::*;
-use std::eprintln;
 
 impl Crc<ClMul<u32>> {
     pub const fn new(algorithm: &'static Algorithm<u32>) -> Self {
@@ -123,12 +122,10 @@ fn update_clmul(
             unsafe {
                 // Reduce upper 64 down to 96
                 let clmul = _mm_clmulepi64_si128(accu, k_96, 0x01);
-                eprintln!("K5: {clmul:X?} = {accu:X?} * {k_96:X?}");
                 // shift in 4 zeroes
                 accu = _mm_slli_si128::<4>(accu);
                 // clear upper 32 bits
                 accu = _mm_and_si128(accu, _mm_set_epi32(0, u32::MAX as _, u32::MAX as _, 0));
-
                 accu = _mm_xor_si128(accu, clmul);
 
                 // Reduce upper 32 down to 64
@@ -184,11 +181,6 @@ pub(crate) const fn calc_mu(poly: u32) -> u64 {
     result
 }
 
-/// Carry-less multiplication of two 32 bit ints
-fn clmul(a: u32, b: u32) -> u64 {
-    clmul_u64(a, b as u64)
-}
-
 /// The same a clmul but allows u64 as the second argument.
 /// Note that this only allows operands that will not overflow the resulting u64
 fn clmul_u64(a: u32, b: u64) -> u64 {
@@ -215,7 +207,7 @@ fn barret_reduce(rx: u64, px: u64, mu: u64) -> u32 {
 #[cfg(test)]
 mod test {
     use crate::crc32::{
-        clmul::{calc_k, calc_mu, clmul, clmul_u64},
+        clmul::{calc_k, calc_mu, clmul_u64},
         update_nolookup,
     };
     use crc_catalog::Algorithm;
@@ -254,7 +246,7 @@ mod test {
         // add implied zeroes at the end of the message polynom
         let next_bytes = 0;
         let accu_hi = (rx >> 32) as u32;
-        let clmul = clmul(accu_hi, calc_k(64, poly));
+        let clmul = clmul_u64(accu_hi, calc_k(64, poly) as u64);
         let to_barret_reduce = clmul ^ ((rx << 32) | next_bytes as u64);
 
         let barret = barret_reduce(to_barret_reduce, px, calc_mu(poly));
@@ -266,18 +258,6 @@ mod test {
     fn test_calc_mu() {
         let poly = 0x04C11DB7;
         assert_eq!(calc_mu(poly), 0x104D101DF);
-    }
-
-    #[test]
-    fn test_clmul() {
-        assert_eq!(clmul(0, 0), 0);
-        assert_eq!(clmul(1, 0), 0);
-        assert_eq!(clmul(0, 1), 0);
-        assert_eq!(clmul(1, 1), 1);
-        assert_eq!(clmul(1, 2), 2);
-        assert_eq!(clmul(0b11, 0b11), 0b101);
-        assert_eq!(clmul(0b1001, 0b11), 0b11011);
-        assert_eq!(clmul(0xF0000000, 0x1010), 0xF0F00000000);
     }
 
     #[test]
