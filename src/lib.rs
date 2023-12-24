@@ -25,9 +25,10 @@
 //! digest.update(b"123456789");
 //! assert_eq!(digest.finalize(), 0xaee7);
 //! ```
-#![no_std]
+//#![no_std]
 
 pub use crc_catalog::*;
+use table::ClMulConsts32;
 
 mod crc128;
 mod crc16;
@@ -69,7 +70,7 @@ impl<W: Width> crate::Implementation for NoTable<W> {
 
 impl<W: Width> crate::Implementation for ClMul<W> {
     type Width = W;
-    type Table = ();
+    type Table = ClMulConsts32;
 }
 
 mod private {

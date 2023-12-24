@@ -144,6 +144,31 @@ pub(crate) const fn crc32_table_slice_16(width: u8, poly: u32, reflect: bool) ->
     table
 }
 
+pub struct ClMulConsts32 {
+    pub k_64: u32,
+    pub k_96: u32,
+    pub k_128: u32,
+    pub px: u64,
+    pub mu: u64,
+}
+pub(crate) const fn crc32_clmul_consts(width: u8, poly: u32, reflect: bool) -> ClMulConsts32 {
+    let poly = if reflect {
+        let poly = poly.reverse_bits();
+        poly >> (32u8 - width)
+    } else {
+        poly << (32u8 - width)
+    };
+
+    use crate::crc32::clmul::{calc_k, calc_mu};
+    ClMulConsts32 {
+        k_64: calc_k(64, poly),
+        k_96: calc_k(96, poly),
+        k_128: calc_k(128, poly),
+        mu: calc_mu(poly),
+        px: poly as u64 | 1 << 32,
+    }
+}
+
 pub(crate) const fn crc64_table(width: u8, poly: u64, reflect: bool) -> [u64; 256] {
     let poly = if reflect {
         let poly = poly.reverse_bits();
