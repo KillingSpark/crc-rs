@@ -64,59 +64,46 @@ fn update_clmul(
     let mut i = 0;
     let mut accu: __m128i;
     let k_128: __m128i;
+    let k_192: __m128i;
     let k_96: __m128i;
     let k_64: __m128i;
+    let flip_bytes: __m128i =
+        unsafe { _mm_set_epi32(0x00010203, 0x04050607, 0x08090A0B, 0x0C0D0E0F) };
     if algorithm.refin {
         while i < bytes.len() {
             panic!("Reflected is for later");
         }
     } else {
-        if bytes.len() >= 8 {
-            let accu_start = u64::from_be_bytes([
-                bytes[i],
-                bytes[i + 1],
-                bytes[i + 2],
-                bytes[i + 3],
-                bytes[i + 4],
-                bytes[i + 5],
-                bytes[i + 6],
-                bytes[i + 7],
-            ]) ^ (crc as u64) << 32;
-            unsafe {
-                accu = _mm_set_epi64x(0, accu_start as _);
-            }
+        while i < bytes.len() && unsafe { bytes.as_ptr().add(i) as usize % 16 != 0 } {
+            let to_crc = ((crc >> 24) ^ bytes[i] as u32) & 0xFF;
+            crc = crc32(algorithm.poly, algorithm.refin, to_crc) ^ (crc << 8);
+            i += 1;
+        }
+        if bytes.len() - i >= 16 {
             unsafe {
                 k_128 = _mm_set_epi64x(0, consts.k_128 as _);
+                k_192 = _mm_set_epi64x(0, consts.k_192 as _);
                 k_96 = _mm_set_epi64x(0, consts.k_96 as _);
                 k_64 = _mm_set_epi64x(0, consts.k_64 as _);
             }
+            
+            unsafe {
+                let next = _mm_load_si128(bytes.as_ptr().add(i).cast());
+                let next = _mm_shuffle_epi8(next, flip_bytes);
+                accu = _mm_xor_si128(next, _mm_set_epi32(crc as i32, 0, 0, 0));
+                i += 16;
+            }
 
-            i = 8;
-            while i + 8 < bytes.len() {
-                let clmul = unsafe { _mm_clmulepi64_si128(accu, k_128, 0x01) };
-                let next = unsafe {
-                    _mm_set_epi8(
-                        0,
-                        0,
-                        0,
-                        0,
-                        0,
-                        0,
-                        0,
-                        0,
-                        bytes[i] as _,
-                        bytes[i + 1] as _,
-                        bytes[i + 2] as _,
-                        bytes[i + 3] as _,
-                        bytes[i + 4] as _,
-                        bytes[i + 5] as _,
-                        bytes[i + 6] as _,
-                        bytes[i + 7] as _,
-                    )
-                };
-                i += 8;
-                accu = unsafe { _mm_slli_si128::<8>(accu) };
-                accu = unsafe { _mm_xor_si128(clmul, _mm_or_si128(next, accu)) };
+            while i + 16 < bytes.len() {
+                unsafe {
+                    let clmul_hi = _mm_clmulepi64_si128(accu, k_192, 0x01);
+                    let clmul_lo = _mm_clmulepi64_si128(accu, k_128, 0x00);
+                    let next = _mm_load_si128(bytes.as_ptr().add(i).cast());
+                    i += 16;
+                    accu = _mm_xor_si128(clmul_lo, clmul_hi);
+                    let next = _mm_shuffle_epi8(next, flip_bytes);
+                    accu = _mm_xor_si128(accu, next);
+                }
             }
 
             unsafe {

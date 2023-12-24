@@ -78,7 +78,8 @@ fn checksum(c: &mut Criterion) {
         })
         .bench_function("slice16", |b| {
             b.iter(|| ISCSI_SLICE16.checksum(black_box(&bytes)))
-        }).bench_function("clmul", |b| {
+        })
+        .bench_function("clmul", |b| {
             b.iter(|| ISCSI_CLMUL.checksum(black_box(&bytes)))
         });
 
