@@ -113,10 +113,12 @@ fn update_clmul(
                         // Fold one accu, load the next 16 bytes and store result into accu again
                         macro_rules! fold_once {
                             ($accu_name:ident) => {
+                                // fold upper and lower halves with the respective constant
                                 $accu_name = _mm_xor_si128(
                                     _mm_clmulepi64_si128($accu_name, k_512_576, 0x11),
                                     _mm_clmulepi64_si128($accu_name, k_512_576, 0x00),
                                 );
+                                // load next 16 bytes and xor folding result on top
                                 $accu_name = _mm_xor_si128(
                                     $accu_name,
                                     _mm_shuffle_epi8(
