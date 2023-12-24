@@ -63,8 +63,7 @@ fn update_clmul(
 ) -> u32 {
     let mut i = 0;
     let mut accu: __m128i;
-    let k_576: __m128i;
-    let k_512: __m128i;
+    let k_512_576: __m128i;
     let k_192: __m128i;
     let k_128: __m128i;
     let k_96: __m128i;
@@ -83,8 +82,9 @@ fn update_clmul(
         }
         if bytes.len() - i >= 16 {
             unsafe {
-                k_576 = _mm_set_epi64x(0, consts.k_576 as _);
-                k_512 = _mm_set_epi64x(0, consts.k_512 as _);
+                // Load all consts into SSE registers
+                // The register allocator is smart enough to actually load these when necessary
+                k_512_576 = _mm_set_epi64x(consts.k_576 as _, consts.k_512 as _);
                 k_192 = _mm_set_epi64x(0, consts.k_192 as _);
                 k_128 = _mm_set_epi64x(0, consts.k_128 as _);
                 k_96 = _mm_set_epi64x(0, consts.k_96 as _);
@@ -112,10 +112,10 @@ fn update_clmul(
                     while i + 64 < bytes.len() {
                         // Fold one accu, load the next 16 bytes and store result into accu again
                         macro_rules! fold_once {
-                            ($accu_name:ident, $upper_const:ident, $lower_const:ident) => {
+                            ($accu_name:ident) => {
                                 $accu_name = _mm_xor_si128(
-                                    _mm_clmulepi64_si128($accu_name, $upper_const, 0x01),
-                                    _mm_clmulepi64_si128($accu_name, $lower_const, 0x00),
+                                    _mm_clmulepi64_si128($accu_name, k_512_576, 0x11),
+                                    _mm_clmulepi64_si128($accu_name, k_512_576, 0x00),
                                 );
                                 $accu_name = _mm_xor_si128(
                                     $accu_name,
@@ -128,10 +128,10 @@ fn update_clmul(
                             };
                         }
 
-                        fold_once!(accu_0, k_576, k_512);
-                        fold_once!(accu_1, k_576, k_512);
-                        fold_once!(accu_2, k_576, k_512);
-                        fold_once!(accu_3, k_576, k_512);
+                        fold_once!(accu_0);
+                        fold_once!(accu_1);
+                        fold_once!(accu_2);
+                        fold_once!(accu_3);
                     }
 
                     // Fold accus into one 128bit value
