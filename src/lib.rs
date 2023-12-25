@@ -25,7 +25,8 @@
 //! digest.update(b"123456789");
 //! assert_eq!(digest.finalize(), 0xaee7);
 //! ```
-//#![no_std]
+#![no_std]
+#![deny(unsafe_code)]
 
 pub use crc_catalog::*;
 use table::ClMulConsts32;

@@ -1,3 +1,5 @@
+#![allow(unsafe_code)]
+
 use crate::{
     table::{crc32_clmul_consts, ClMulConsts32},
     util::crc32,
