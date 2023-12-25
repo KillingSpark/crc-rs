@@ -263,7 +263,7 @@ mod test {
 
         pub const CRC_32_ISCSI_NONREFLEX: Algorithm<u32> = Algorithm {
             width: 32,
-            poly: 0x04C11DB7,
+            poly: 0x1edc6f41,
             init: 0xffffffff,
             // This is the only flag that affects the optimized code path
             refin: false,
