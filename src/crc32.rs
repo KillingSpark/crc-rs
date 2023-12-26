@@ -153,7 +153,10 @@ const fn update_slice16(
 
 #[cfg(test)]
 mod test {
-    use crc_catalog::{Algorithm, CRC_24_FLEXRAY_A, CRC_32_MPEG_2, CRC_32_XFER, CRC_24_FLEXRAY_B, CRC_21_CAN_FD, CRC_17_CAN_FD};
+    use crc_catalog::{
+        Algorithm, CRC_17_CAN_FD, CRC_21_CAN_FD, CRC_24_FLEXRAY_A, CRC_24_FLEXRAY_B, CRC_32_MPEG_2,
+        CRC_32_XFER,
+    };
 
     use crate::{Bytewise, ClMul, Crc, Implementation, NoTable, Slice16};
 
