@@ -154,8 +154,8 @@ const fn update_slice16(
 #[cfg(test)]
 mod test {
     use crc_catalog::{
-        Algorithm, CRC_17_CAN_FD, CRC_21_CAN_FD, CRC_24_FLEXRAY_A, CRC_24_FLEXRAY_B, CRC_32_MPEG_2,
-        CRC_32_XFER,
+        Algorithm, CRC_17_CAN_FD, CRC_21_CAN_FD, CRC_24_FLEXRAY_A, CRC_24_FLEXRAY_B, CRC_32_BZIP2,
+        CRC_32_ISCSI, CRC_32_MPEG_2, CRC_32_XFER,
     };
 
     use crate::{Bytewise, ClMul, Crc, Implementation, NoTable, Slice16};
@@ -275,8 +275,20 @@ mod test {
             check: 0xe3069283,
             residue: 0xb798b438,
         };
+        pub const CRC_32_GZIP: Algorithm<u32> = Algorithm {
+            width: 32,
+            poly: (0x01_DB_71_06_41u64.reverse_bits() >> 31) as u32,
+            init: 0xffffffff,
+            refin: true,
+            refout: true,
+            xorout: 0xffffffff,
+            check: 0xe3069283,
+            residue: 0xb798b438,
+        };
 
         let algs_to_test = [
+            &CRC_32_GZIP,
+            &CRC_32_ISCSI,
             &CRC_17_CAN_FD,
             &CRC_21_CAN_FD,
             &CRC_24_FLEXRAY_A,

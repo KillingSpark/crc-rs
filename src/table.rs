@@ -144,34 +144,43 @@ pub(crate) const fn crc32_table_slice_16(width: u8, poly: u32, reflect: bool) ->
     table
 }
 
+#[derive(Debug)]
 pub struct ClMulConsts32 {
-    pub k_64: u32,
-    pub k_96: u32,
-    pub k_128: u32,
-    pub k_192: u32,
-    pub k_512: u32,
-    pub k_576: u32,
+    pub k_64: u64,
+    pub k_96: u64,
+    pub k_128: u64,
+    pub k_192: u64,
+    pub k_512: u64,
+    pub k_576: u64,
     pub px: u64,
     pub mu: u64,
 }
 pub(crate) const fn crc32_clmul_consts(width: u8, poly: u32, reflect: bool) -> ClMulConsts32 {
-    let poly = if reflect {
-        let poly = poly.reverse_bits();
-        poly >> (32u8 - width)
-    } else {
-        poly << (32u8 - width)
-    };
-
     use crate::crc32::clmul::{calc_k, calc_mu};
-    ClMulConsts32 {
-        k_64: calc_k(64, poly),
-        k_96: calc_k(96, poly),
-        k_128: calc_k(128, poly),
-        k_192: calc_k(192, poly),
-        k_512: calc_k(512, poly),
-        k_576: calc_k(576, poly),
-        mu: calc_mu(poly),
-        px: poly as u64 | 1 << 32,
+    let poly = poly << (32u8 - width);
+
+    if reflect {
+        ClMulConsts32 {
+            k_64: (calc_k(32, poly).reverse_bits() as u64) << 1,
+            k_96: (calc_k(64, poly).reverse_bits() as u64) << 1,
+            k_128: (calc_k(128 - 32, poly).reverse_bits() as u64) << 1,
+            k_192: (calc_k(128 + 32, poly).reverse_bits() as u64) << 1,
+            k_512: (calc_k(512 - 32, poly).reverse_bits() as u64) << 1,
+            k_576: (calc_k(512 + 32, poly).reverse_bits() as u64) << 1,
+            mu: calc_mu(poly).reverse_bits() >> 31,
+            px: ((poly as u64) | 1 << 32).reverse_bits() >> 31,
+        }
+    } else {
+        ClMulConsts32 {
+            k_64: calc_k(64, poly) as u64,
+            k_96: calc_k(96, poly) as u64,
+            k_128: calc_k(128, poly) as u64,
+            k_192: calc_k(192, poly) as u64,
+            k_512: calc_k(512, poly) as u64,
+            k_576: calc_k(576, poly) as u64,
+            mu: calc_mu(poly),
+            px: poly as u64 | 1 << 32,
+        }
     }
 }
 
