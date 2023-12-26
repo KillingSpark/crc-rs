@@ -83,7 +83,7 @@ fn update_clmul(
         let first_few = (16 - bytes.as_ptr() as usize % 16) % 16;
         for _ in 0..usize::min(bytes.len(), first_few) {
             let to_crc = ((crc >> 24) ^ bytes[bytes_idx] as u32) & 0xFF;
-            crc = crc32(algorithm.poly, algorithm.refin, to_crc) ^ (crc << 8);
+            crc = crc32(consts.px as u32, algorithm.refin, to_crc) ^ (crc << 8);
             bytes_idx += 1;
         }
         if bytes.len() - bytes_idx >= 16 {
@@ -193,7 +193,7 @@ fn update_clmul(
         // Process last few bytes regularly until we are 16 byte aligned
         while bytes_idx < bytes.len() {
             let to_crc = ((crc >> 24) ^ bytes[bytes_idx] as u32) & 0xFF;
-            crc = crc32(algorithm.poly, algorithm.refin, to_crc) ^ (crc << 8);
+            crc = crc32(consts.px as u32, algorithm.refin, to_crc) ^ (crc << 8);
             bytes_idx += 1;
         }
     }
